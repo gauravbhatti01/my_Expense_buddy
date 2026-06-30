@@ -13,9 +13,13 @@ which is safe to sit in a browser-readable file.
 """
 
 import json
+import os
 from pathlib import Path
+from dotenv import load_dotenv
 
 import db
+
+load_dotenv()
 
 BASE_DIR = Path(__file__).parent
 CONFIG_PATH = BASE_DIR / "config.json"
@@ -29,8 +33,23 @@ ALL_CATEGORIES = [
 
 
 def load_config():
-    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        cfg = json.load(f)
+    cfg = {}
+    if CONFIG_PATH.exists():
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+        except Exception:
+            pass
+            
+    # Override with environment variables if present
+    if os.environ.get("CURRENCY"):
+        cfg["currency"] = os.environ.get("CURRENCY")
+    if os.environ.get("MONTHLY_BUDGET"):
+        try:
+            cfg["monthlyBudget"] = float(os.environ.get("MONTHLY_BUDGET"))
+        except ValueError:
+            pass
+            
     return cfg
 
 
@@ -65,11 +84,16 @@ def export():
         f"window.EXPENSE_CONFIG = {json.dumps(public_config, ensure_ascii=False, indent=2)};\n"
     )
 
-    DATA_JS_PATH.write_text(js, encoding="utf-8")
-    return len(public_rows)
+    try:
+        DATA_JS_PATH.write_text(js, encoding="utf-8")
+    except OSError:
+        pass  # ignore read-only file systems in production cloud hosting
+        
+    return js
 
 
 if __name__ == "__main__":
     db.init_db()
-    n = export()
-    print(f"Exported {n} transactions to {DATA_JS_PATH}")
+    js_content = export()
+    print(f"Exported {len(db.all_rows())} transactions.")
+

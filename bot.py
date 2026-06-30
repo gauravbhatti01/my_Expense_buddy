@@ -17,8 +17,11 @@ Requires:  pip install python-telegram-bot
 
 import json
 import logging
+import os
+import asyncio
 from datetime import date
 from pathlib import Path
+from dotenv import load_dotenv
 
 from telegram import Update
 from telegram.ext import (
@@ -32,6 +35,8 @@ from telegram.ext import (
 import db
 import export
 from parser import parse_message
+
+load_dotenv()
 
 BASE_DIR = Path(__file__).parent
 CONFIG_PATH = BASE_DIR / "config.json"
@@ -61,8 +66,7 @@ logger = logging.getLogger(__name__)
 
 
 def load_config():
-    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+    return export.load_config()
 
 
 def fmt_money(value, currency="₹"):
@@ -226,11 +230,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-def start_http_server():
+def start_http_server(app, main_loop, port, webhook_path, blocking=False):
     import http.server
     import threading
 
-    class ConfigHandler(http.server.BaseHTTPRequestHandler):
+    class ExpenseHTTPHandler(http.server.BaseHTTPRequestHandler):
         def log_message(self, format, *args):
             logger.info("HTTP Request: %s - - %s", self.address_string(), format % args)
 
@@ -241,21 +245,61 @@ def start_http_server():
             self.send_header("Access-Control-Allow-Headers", "Content-Type")
             self.end_headers()
 
+        def do_GET(self):
+            if self.path == "/":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                dashboard_path = BASE_DIR / "dashboard.html"
+                if dashboard_path.exists():
+                    self.wfile.write(dashboard_path.read_bytes())
+                else:
+                    self.wfile.write(b"dashboard.html not found.")
+            elif self.path == "/data.js":
+                self.send_response(200)
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Content-Type", "application/javascript; charset=utf-8")
+                self.end_headers()
+                js_data = export.export()
+                self.wfile.write(js_data.encode("utf-8"))
+            else:
+                self.send_response(404)
+                self.end_headers()
+
         def do_POST(self):
-            if self.path == "/api/config":
+            if webhook_path and self.path == webhook_path:
+                try:
+                    content_length = int(self.headers.get('Content-Length', 0))
+                    body = self.rfile.read(content_length)
+                    data = json.loads(body.decode('utf-8'))
+                    
+                    update = Update.de_json(data, app.bot)
+                    future = asyncio.run_coroutine_threadsafe(app.update_queue.put(update), main_loop)
+                    future.result(timeout=5)
+                    
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(b"OK")
+                except Exception as e:
+                    logger.error("Error processing webhook update: %s", e)
+                    self.send_response(500)
+                    self.end_headers()
+                    self.wfile.write(str(e).encode('utf-8'))
+            elif self.path == "/api/config":
                 try:
                     content_length = int(self.headers.get('Content-Length', 0))
                     post_data = self.rfile.read(content_length)
                     data = json.loads(post_data.decode('utf-8'))
                     
-                    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                        cfg = json.load(f)
-                        
+                    cfg = export.load_config()
                     cfg["monthlyBudget"] = float(data.get("monthlyBudget", cfg.get("monthlyBudget", 0)))
                     cfg["budgets"] = data.get("budgets", cfg.get("budgets", {}))
                     
-                    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-                        json.dump(cfg, f, indent=2)
+                    try:
+                        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                            json.dump(cfg, f, indent=2)
+                    except OSError:
+                        pass  # Ignore if config.json is on a read-only filesystem
                         
                     export.export()
                     
@@ -279,23 +323,26 @@ def start_http_server():
                 self.send_response(404)
                 self.end_headers()
 
-    server = http.server.ThreadingHTTPServer(("localhost", 8000), ConfigHandler)
-    logger.info("Local HTTP config server starting on http://localhost:8000…")
-    t = threading.Thread(target=server.serve_forever, daemon=True)
-    t.start()
+    server = http.server.ThreadingHTTPServer(("0.0.0.0", port), ExpenseHTTPHandler)
+    logger.info("HTTP config and web server starting on http://0.0.0.0:%d…", port)
+    
+    if blocking:
+        server.serve_forever()
+    else:
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
 
 
 def main():
     db.init_db()
     export.export()  # make sure dashboard has data the moment the bot starts
-    start_http_server()
 
     cfg = load_config()
-    token = cfg.get("telegram_token", "")
+    token = os.environ.get("TELEGRAM_TOKEN") or cfg.get("telegram_token", "")
     if not token or token.startswith("PUT_YOUR"):
         raise SystemExit(
-            "No Telegram token configured. Edit config.json and set "
-            "'telegram_token' to the value BotFather gave you."
+            "No Telegram token configured. Edit config.json or set the "
+            "TELEGRAM_TOKEN environment variable."
         )
 
     app = Application.builder().token(token).build()
@@ -307,8 +354,38 @@ def main():
     app.add_handler(CommandHandler("budget", budget_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("Bot starting — polling for messages…")
-    app.run_polling()
+    webhook_url = os.environ.get("RENDER_EXTERNAL_URL")
+    
+    if webhook_url:
+        # Webhook mode (cloud deployment)
+        try:
+            main_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            main_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(main_loop)
+        
+        main_loop.run_until_complete(app.initialize())
+        main_loop.run_until_complete(app.start())
+        
+        # Setup telegram webhook with token path for security
+        webhook_path = f"/webhook/{token.replace(':', '_')}"
+        full_webhook_url = f"{webhook_url.rstrip('/')}{webhook_path}"
+        logger.info("Setting Telegram Webhook to: %s", full_webhook_url)
+        main_loop.run_until_complete(app.bot.set_webhook(url=full_webhook_url))
+        
+        port = int(os.environ.get("PORT", 8000))
+        try:
+            start_http_server(app, main_loop, port, webhook_path, blocking=True)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            main_loop.run_until_complete(app.stop())
+            main_loop.run_until_complete(app.shutdown())
+    else:
+        # Polling mode (local deployment)
+        start_http_server(app, None, 8000, None, blocking=False)
+        logger.info("Bot starting — polling for messages…")
+        app.run_polling()
 
 
 if __name__ == "__main__":

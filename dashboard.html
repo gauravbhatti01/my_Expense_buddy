@@ -1411,7 +1411,8 @@
       budgets: categoryBudgets
     };
 
-    fetch("http://localhost:8000/api/config", {
+    var apiHost = window.location.protocol === "file:" ? "http://localhost:8000" : window.location.origin;
+    fetch(apiHost + "/api/config", {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
