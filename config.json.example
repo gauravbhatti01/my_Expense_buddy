@@ -1,0 +1,21 @@
+{
+  "telegram_token": "YOUR_BOTFATHER_TOKEN_HERE",
+  "currency": "₹",
+  "monthlyBudget": 85500,
+  "budgets": {
+    "rent": 15000,
+    "food": 7000,
+    "groceries": 3000,
+    "travel": 3000,
+    "bills": 2000,
+    "emis": 21100,
+    "insurance": 4650,
+    "investments": 11000,
+    "emergency": 10000,
+    "clothes": 2500,
+    "luxuries": 2500,
+    "health": 1500,
+    "education": 2000,
+    "other": 250
+  }
+}

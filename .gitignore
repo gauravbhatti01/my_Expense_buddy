@@ -1,0 +1,19 @@
+# Local database
+expenses.db
+
+# Generated data for the dashboard
+data.js
+
+# Configuration containing sensitive Telegram tokens
+config.json
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Editor/OS files
+.vscode/
+.DS_Store
+Thumbs.db
