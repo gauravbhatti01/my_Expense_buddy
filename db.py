@@ -14,12 +14,16 @@ Single table "txns":
 
 import os
 import sqlite3
+import json
+import logging
 from datetime import datetime, date
 from pathlib import Path
 from dotenv import load_dotenv
 
 # Load env variables from .env if present
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 DB_PATH = Path(__file__).parent / "expenses.db"
@@ -54,6 +58,10 @@ CREATE TABLE IF NOT EXISTS txns (
     chat_id     BIGINT,
     created_at  VARCHAR(30) NOT NULL
 );
+CREATE TABLE IF NOT EXISTS config (
+    key         VARCHAR(50) PRIMARY KEY,
+    value       TEXT NOT NULL
+);
 """
 
 
@@ -86,6 +94,44 @@ def init_db():
     """Ensure the database file and schema exist. Safe to call repeatedly."""
     conn = _connect()
     conn.close()
+
+
+def load_config_db():
+    """Load configuration dictionary from the config table in PostgreSQL."""
+    if not IS_POSTGRES:
+        return None
+    conn = _connect()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM config WHERE key = %s", ("config",))
+        row = cur.fetchone()
+        if row:
+            return json.loads(row[0])
+    except Exception as e:
+        logger.error("Failed to load config from database: %s", e)
+    finally:
+        conn.close()
+    return None
+
+
+def save_config_db(cfg):
+    """Save configuration dictionary to the config table in PostgreSQL."""
+    if not IS_POSTGRES:
+        return
+    conn = _connect()
+    try:
+        val_str = json.dumps(cfg)
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO config (key, value) VALUES (%s, %s)
+               ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value""",
+            ("config", val_str)
+        )
+        conn.commit()
+    except Exception as e:
+        logger.error("Failed to save config to database: %s", e)
+    finally:
+        conn.close()
 
 
 def add(amount, category, note, txn_type, chat_id=None, txn_date=None):

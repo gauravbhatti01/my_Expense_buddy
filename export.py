@@ -33,6 +33,12 @@ ALL_CATEGORIES = [
 
 
 def load_config():
+    # If using Postgres, attempt to load config from the database
+    if db.IS_POSTGRES:
+        db_cfg = db.load_config_db()
+        if db_cfg is not None:
+            return db_cfg
+
     cfg = {}
     if CONFIG_PATH.exists():
         try:
@@ -50,6 +56,10 @@ def load_config():
         except ValueError:
             pass
             
+    # Bootstrap the database config on first load
+    if db.IS_POSTGRES and cfg:
+        db.save_config_db(cfg)
+        
     return cfg
 
 
