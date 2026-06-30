@@ -51,10 +51,6 @@ export default function Dashboard() {
   const [formBudgets, setFormBudgets] = useState({});
   const [showToast, setShowToast] = useState(false);
 
-  useEffect(() => {
-    fetchData();
-  }, []);
-
   const fetchData = async () => {
     try {
       const res = await fetch('/api/data');
@@ -78,6 +74,10 @@ export default function Dashboard() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    fetchData();
+  }, []);
 
   const openSettings = () => {
     setFormMonthlyBudget(config.monthlyBudget || 0);
