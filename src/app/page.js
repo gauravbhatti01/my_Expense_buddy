@@ -1,3 +1,4 @@
+// Force Vercel redeploy
 'use client';
 
 import { useState, useEffect } from 'react';
