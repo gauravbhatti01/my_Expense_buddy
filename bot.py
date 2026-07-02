@@ -375,8 +375,9 @@ def main():
         
         port = int(os.environ.get("PORT", 8000))
         try:
-            start_http_server(app, main_loop, port, webhook_path, blocking=True)
-        except KeyboardInterrupt:
+            start_http_server(app, main_loop, port, webhook_path, blocking=False)
+            main_loop.run_forever()
+        except (KeyboardInterrupt, SystemExit):
             pass
         finally:
             main_loop.run_until_complete(app.stop())
