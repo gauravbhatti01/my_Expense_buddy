@@ -853,8 +853,8 @@
     return data;
   }
 
-  var RAW_DATA = (window.EXPENSE_DATA && window.EXPENSE_DATA.length) ? window.EXPENSE_DATA : [];
-  var IS_SAMPLE = !(window.EXPENSE_DATA && window.EXPENSE_DATA.length);
+  var RAW_DATA = (typeof window.EXPENSE_DATA !== "undefined") ? window.EXPENSE_DATA : [];
+  var IS_SAMPLE = (typeof window.EXPENSE_DATA === "undefined");
   var CONFIG = window.EXPENSE_CONFIG || DEFAULT_CONFIG;
   if (!CONFIG.budgets) CONFIG.budgets = DEFAULT_CONFIG.budgets;
   if (!CONFIG.categories) CONFIG.categories = DEFAULT_CATEGORIES;
@@ -1437,7 +1437,66 @@
     .catch(function(err) {
       alert("Failed to save budgets: " + err.message + "\nMake sure the Telegram bot is running locally.");
     });
-  });
+  // Auto-refresh logic (polls every 3 seconds)
+  function startAutoRefresh() {
+    var apiHost = window.location.protocol === "file:" ? "http://localhost:8000" : window.location.origin;
+    
+    setInterval(function() {
+      if (IS_SAMPLE) return;
+      
+      fetch(apiHost + "/api/data")
+        .then(function(res) {
+          if (!res.ok) throw new Error("Server error");
+          return res.json();
+        })
+        .then(function(result) {
+          var dataChanged = JSON.stringify(result.data) !== JSON.stringify(RAW_DATA);
+          var configChanged = JSON.stringify(result.config) !== JSON.stringify(CONFIG);
+          
+          if (dataChanged || configChanged) {
+            console.log("Data or config updated, re-rendering...");
+            RAW_DATA = result.data;
+            CONFIG = result.config;
+            CURRENCY = CONFIG.currency || "₹";
+            
+            // Re-derive months
+            var monthsSet = {};
+            RAW_DATA.forEach(function(r){ monthsSet[monthKey(r.date)] = true; });
+            allMonths = Object.keys(monthsSet).sort();
+            if (allMonths.length === 0){
+              var now = new Date();
+              allMonths = [now.getFullYear() + "-" + String(now.getMonth()+1).padStart(2,"0")];
+            }
+            
+            // Re-populate monthSelect options
+            var prevValue = monthSelect.value;
+            monthSelect.innerHTML = "";
+            allMonths.slice().reverse().forEach(function(m){
+              var opt = document.createElement("option");
+              opt.value = m;
+              opt.textContent = monthLabel(m);
+              monthSelect.appendChild(opt);
+            });
+            
+            if (allMonths.indexOf(prevValue) !== -1) {
+              selectedMonth = prevValue;
+            } else {
+              selectedMonth = allMonths[allMonths.length - 1];
+            }
+            monthSelect.value = selectedMonth;
+            
+            render();
+          }
+        })
+        .catch(function(err) {
+          // Silent catch to avoid console spamming if the bot is stopped
+        });
+    }, 3000);
+  }
+  
+  if (!IS_SAMPLE) {
+    startAutoRefresh();
+  }
 
 })();
 </script>

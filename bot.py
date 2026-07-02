@@ -290,7 +290,7 @@ async def clear_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     args = context.args
     if args and args[0].lower() == "confirm":
-        db.clear_all(chat_id=chat_id)
+        db.clear_all()  # Clear everything in the database so the web portal is also fully cleared
         export.export()
         await update.message.reply_text("🧹 All your expense and income records have been permanently cleared.")
     else:
@@ -486,6 +486,32 @@ def start_http_server(app, main_loop, port, webhook_path, blocking=False):
                 self.end_headers()
                 js_data = export.export()
                 self.wfile.write(js_data.encode("utf-8"))
+            elif self.path == "/api/data":
+                self.send_response(200)
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                cfg = export.load_config()
+                rows = db.all_rows()
+                public_config = {
+                    "currency": cfg.get("currency", "₹"),
+                    "monthlyBudget": cfg.get("monthlyBudget", 0),
+                    "budgets": cfg.get("budgets", {}),
+                    "categories": export.ALL_CATEGORIES,
+                }
+                public_rows = [
+                    {
+                        "id": r["id"],
+                        "date": r["date"],
+                        "category": r["category"],
+                        "amount": r["amount"],
+                        "note": r["note"],
+                        "type": r["type"],
+                    }
+                    for r in rows
+                ]
+                response = {"config": public_config, "data": public_rows}
+                self.wfile.write(json.dumps(response).encode("utf-8"))
             else:
                 self.send_response(404)
                 self.end_headers()
