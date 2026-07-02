@@ -1437,6 +1437,7 @@
     .catch(function(err) {
       alert("Failed to save budgets: " + err.message + "\nMake sure the Telegram bot is running locally.");
     });
+  });
   // Auto-refresh logic (polls every 3 seconds)
   function startAutoRefresh() {
     var apiHost = window.location.protocol === "file:" ? "http://localhost:8000" : window.location.origin;
