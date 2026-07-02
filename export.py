@@ -63,6 +63,18 @@ def load_config():
     return cfg
 
 
+def save_config(cfg):
+    """Save configuration dictionary to PostgreSQL (if active) and config.json."""
+    if db.IS_POSTGRES:
+        db.save_config_db(cfg)
+    try:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+    except OSError:
+        pass
+    return cfg
+
+
 def export():
     cfg = load_config()
     rows = db.all_rows()

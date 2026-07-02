@@ -184,6 +184,44 @@ async def undo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def setbudget_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: /setbudget <amount>\nExample: /setbudget 50000")
+        return
+    try:
+        amount = float(args[0])
+        if amount < 0:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text("Please enter a valid positive number for the budget.")
+        return
+        
+    cfg = load_config()
+    cfg["monthlyBudget"] = amount
+    export.save_config(cfg)
+    export.export()
+    
+    currency = cfg.get("currency", "₹")
+    await update.message.reply_text(f"✅ Monthly budget updated to {fmt_money(amount, currency)}.")
+
+
+async def clear_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    args = context.args
+    if args and args[0].lower() == "confirm":
+        db.clear_all(chat_id=chat_id)
+        export.export()
+        await update.message.reply_text("🧹 All your expense and income records have been permanently cleared.")
+    else:
+        await update.message.reply_text(
+            "⚠️ *WARNING*: This will permanently delete all your logged expenses and income records in the database.\n\n"
+            "To proceed, please reply with:\n"
+            "`/clear confirm`",
+            parse_mode="Markdown"
+        )
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("Received message from chat_id: %s - Content: %r", update.effective_chat.id, update.message.text)
     text = update.message.text
@@ -295,12 +333,7 @@ def start_http_server(app, main_loop, port, webhook_path, blocking=False):
                     cfg["monthlyBudget"] = float(data.get("monthlyBudget", cfg.get("monthlyBudget", 0)))
                     cfg["budgets"] = data.get("budgets", cfg.get("budgets", {}))
                     
-                    try:
-                        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-                            json.dump(cfg, f, indent=2)
-                    except OSError:
-                        pass  # Ignore if config.json is on a read-only filesystem
-                        
+                    export.save_config(cfg)
                     export.export()
                     
                     self.send_response(200)
@@ -352,6 +385,8 @@ def main():
     app.add_handler(CommandHandler("total", total_cmd))
     app.add_handler(CommandHandler("undo", undo_cmd))
     app.add_handler(CommandHandler("budget", budget_cmd))
+    app.add_handler(CommandHandler("setbudget", setbudget_cmd))
+    app.add_handler(CommandHandler("clear", clear_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     webhook_url = os.environ.get("RENDER_EXTERNAL_URL")

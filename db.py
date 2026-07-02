@@ -233,6 +233,19 @@ def category_totals(month):
     return {r["category"]: r["total"] for r in rows}
 
 
+def clear_all(chat_id=None):
+    """Delete all transactions (optionally scoped to a chat_id)."""
+    conn = _connect()
+    if chat_id is not None:
+        query = "DELETE FROM txns WHERE chat_id = ?"
+        _run_query(conn, query, (chat_id,))
+    else:
+        query = "DELETE FROM txns"
+        _run_query(conn, query)
+    conn.commit()
+    conn.close()
+
+
 if __name__ == "__main__":
     # quick smoke test
     import os
