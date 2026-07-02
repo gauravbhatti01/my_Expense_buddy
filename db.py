@@ -45,6 +45,10 @@ CREATE TABLE IF NOT EXISTS txns (
     chat_id     BIGINT,
     created_at  TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS processed_updates (
+    update_id   BIGINT PRIMARY KEY,
+    created_at  TEXT NOT NULL
+);
 """
 
 POSTGRES_SCHEMA = """
@@ -61,6 +65,10 @@ CREATE TABLE IF NOT EXISTS txns (
 CREATE TABLE IF NOT EXISTS config (
     key         VARCHAR(50) PRIMARY KEY,
     value       TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS processed_updates (
+    update_id   BIGINT PRIMARY KEY,
+    created_at  VARCHAR(30) NOT NULL
 );
 """
 
@@ -244,6 +252,37 @@ def clear_all(chat_id=None):
         _run_query(conn, query)
     conn.commit()
     conn.close()
+
+
+def check_and_record_update(update_id):
+    """
+    Check if an update has already been processed by inserting its update_id.
+    Returns True if the update is new (successfully inserted), False otherwise.
+    """
+    if update_id is None:
+        return True
+    conn = _connect()
+    created_at = datetime.now().isoformat(timespec="seconds")
+    try:
+        if IS_POSTGRES:
+            query = """INSERT INTO processed_updates (update_id, created_at)
+                       VALUES (%s, %s)
+                       ON CONFLICT (update_id) DO NOTHING"""
+        else:
+            query = """INSERT OR IGNORE INTO processed_updates (update_id, created_at)
+                       VALUES (?, ?)"""
+        
+        cur = conn.cursor()
+        cur.execute(query, (update_id, created_at))
+        rowcount = cur.rowcount
+        conn.commit()
+        return rowcount > 0
+    except Exception as e:
+        logger.error("Failed to check/record update %s: %s", update_id, e)
+        # Fail safe/open to avoid blocking updates in case of schema/DB issues
+        return True
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":

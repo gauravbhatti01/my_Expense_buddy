@@ -22,12 +22,14 @@ import asyncio
 from datetime import date
 from pathlib import Path
 from dotenv import load_dotenv
+from functools import wraps
 
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
@@ -98,6 +100,19 @@ def progress_bar(spent, budget, width=14):
     return f"[{bar}] {pct * 100:.0f}%"
 
 
+def prevent_duplicate_updates(func):
+    @wraps(func)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        if not update or not update.update_id:
+            return await func(update, context, *args, **kwargs)
+        if not db.check_and_record_update(update.update_id):
+            logger.info("Ignoring duplicate update: %s", update.update_id)
+            return
+        return await func(update, context, *args, **kwargs)
+    return wrapper
+
+
+@prevent_duplicate_updates
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("Received /start command from chat_id: %s", update.effective_chat.id)
     await update.message.reply_text(
@@ -111,6 +126,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+@prevent_duplicate_updates
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("Received /help command from chat_id: %s", update.effective_chat.id)
     await update.message.reply_text(
@@ -128,6 +144,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+@prevent_duplicate_updates
 async def total_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cfg = load_config()
     month = date.today().strftime("%Y-%m")
@@ -151,10 +168,68 @@ async def total_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+@prevent_duplicate_updates
 async def budget_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
     cfg = load_config()
     currency = cfg.get("currency", "₹")
     budgets = cfg.get("budgets", {})
+    
+    # 1. Update/view specific category budget if arguments are provided
+    if args:
+        cat = args[0].lower()
+        if cat not in export.ALL_CATEGORIES:
+            valid_cats = ", ".join(export.ALL_CATEGORIES)
+            await update.message.reply_text(
+                f"❌ Invalid category '{args[0]}'.\n"
+                f"Valid categories are: {valid_cats}"
+            )
+            return
+            
+        emoji = CATEGORY_EMOJIS.get(cat, "📦")
+        
+        # If amount is provided, update the budget
+        if len(args) >= 2:
+            try:
+                amount = float(args[1])
+                if amount < 0:
+                    raise ValueError
+            except ValueError:
+                await update.message.reply_text("Please enter a valid positive number for the budget.")
+                return
+                
+            budgets[cat] = amount
+            cfg["budgets"] = budgets
+            export.save_config(cfg)
+            export.export()
+            
+            await update.message.reply_text(
+                f"✅ Budget for {emoji} {cat.capitalize()} updated to {fmt_money(amount, currency)}."
+            )
+            return
+        
+        # If only category is provided, show its details
+        month = date.today().strftime("%Y-%m")
+        spent_by_cat = db.category_totals(month)
+        spent = spent_by_cat.get(cat, 0)
+        cap = budgets.get(cat, 0)
+        bar = progress_bar(spent, cap)
+        remaining = cap - spent
+        remaining_text = (
+            f"{fmt_money(remaining, currency)} left"
+            if remaining >= 0
+            else f"{fmt_money(-remaining, currency)} over budget"
+        )
+        
+        await update.message.reply_text(
+            f"{emoji} {cat.capitalize()} budget this month:\n"
+            f"Spent: {fmt_money(spent, currency)} / {fmt_money(cap, currency)}\n"
+            f"{bar}\n"
+            f"{remaining_text}"
+        )
+        return
+        
+    # 2. Otherwise, list all budgets with an "Edit Budgets" button
     month = date.today().strftime("%Y-%m")
     spent_by_cat = db.category_totals(month)
 
@@ -164,9 +239,12 @@ async def budget_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         flag = " ⚠️" if spent > cap else ""
         emoji = CATEGORY_EMOJIS.get(cat, "📦")
         lines.append(f"  {emoji} {cat.capitalize()}: {fmt_money(spent, currency)} / {fmt_money(cap, currency)}{flag}")
-    await update.message.reply_text("\n".join(lines))
+        
+    reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ Edit Budgets", callback_data="edit_budgets")]])
+    await update.message.reply_text("\n".join(lines), reply_markup=reply_markup)
 
 
+@prevent_duplicate_updates
 async def undo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     deleted = db.undo_last(chat_id=chat_id)
@@ -184,6 +262,7 @@ async def undo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+@prevent_duplicate_updates
 async def setbudget_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
@@ -206,6 +285,7 @@ async def setbudget_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Monthly budget updated to {fmt_money(amount, currency)}.")
 
 
+@prevent_duplicate_updates
 async def clear_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     args = context.args
@@ -222,6 +302,7 @@ async def clear_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+@prevent_duplicate_updates
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("Received message from chat_id: %s - Content: %r", update.effective_chat.id, update.message.text)
     text = update.message.text
@@ -266,6 +347,111 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Month total: {fmt_money(spent, currency)} / {fmt_money(budget, currency)}\n"
         f"{bar}"
     )
+
+
+def get_categories_keyboard():
+    # Grid of category buttons, 2 per row
+    keyboard = []
+    row = []
+    for cat in export.ALL_CATEGORIES:
+        emoji = CATEGORY_EMOJIS.get(cat, "📦")
+        btn = InlineKeyboardButton(f"{emoji} {cat.capitalize()}", callback_data=f"edit_cat_{cat}")
+        row.append(btn)
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="back_to_main")])
+    return InlineKeyboardMarkup(keyboard)
+
+
+def get_adjustment_keyboard(cat):
+    keyboard = [
+        [
+            InlineKeyboardButton("-500", callback_data=f"adjust_{cat}_-500"),
+            InlineKeyboardButton("+500", callback_data=f"adjust_{cat}_500"),
+        ],
+        [
+            InlineKeyboardButton("-1000", callback_data=f"adjust_{cat}_-1000"),
+            InlineKeyboardButton("+1000", callback_data=f"adjust_{cat}_1000"),
+        ],
+        [
+            InlineKeyboardButton("-5000", callback_data=f"adjust_{cat}_-5000"),
+            InlineKeyboardButton("+5000", callback_data=f"adjust_{cat}_5000"),
+        ],
+        [
+            InlineKeyboardButton("🔙 Back to Categories", callback_data="back_to_cats")
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+@prevent_duplicate_updates
+async def budget_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    if data == "edit_budgets" or data == "back_to_cats":
+        reply_markup = get_categories_keyboard()
+        await query.edit_message_text(
+            text="Select a category to edit its budget:",
+            reply_markup=reply_markup
+        )
+    elif data == "back_to_main":
+        cfg = load_config()
+        currency = cfg.get("currency", "₹")
+        budgets = cfg.get("budgets", {})
+        month = date.today().strftime("%Y-%m")
+        spent_by_cat = db.category_totals(month)
+
+        lines = ["Category budgets this month:"]
+        for cat, cap in budgets.items():
+            spent = spent_by_cat.get(cat, 0)
+            flag = " ⚠️" if spent > cap else ""
+            emoji = CATEGORY_EMOJIS.get(cat, "📦")
+            lines.append(f"  {emoji} {cat.capitalize()}: {fmt_money(spent, currency)} / {fmt_money(cap, currency)}{flag}")
+        
+        reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ Edit Budgets", callback_data="edit_budgets")]])
+        await query.edit_message_text(
+            text="\n".join(lines),
+            reply_markup=reply_markup
+        )
+    elif data.startswith("edit_cat_"):
+        cat = data.split("edit_cat_")[1]
+        cfg = load_config()
+        currency = cfg.get("currency", "₹")
+        budgets = cfg.get("budgets", {})
+        cap = budgets.get(cat, 0)
+        emoji = CATEGORY_EMOJIS.get(cat, "📦")
+        
+        await query.edit_message_text(
+            text=f"Current budget for {emoji} {cat.capitalize()}: {fmt_money(cap, currency)}\n\nUse the buttons below to adjust:",
+            reply_markup=get_adjustment_keyboard(cat)
+        )
+    elif data.startswith("adjust_"):
+        parts = data.split("_")
+        cat = parts[1]
+        delta = float(parts[2])
+        
+        cfg = load_config()
+        currency = cfg.get("currency", "₹")
+        budgets = cfg.get("budgets", {})
+        old_cap = budgets.get(cat, 0)
+        new_cap = max(0.0, old_cap + delta)
+        
+        budgets[cat] = new_cap
+        cfg["budgets"] = budgets
+        
+        export.save_config(cfg)
+        export.export()
+        
+        emoji = CATEGORY_EMOJIS.get(cat, "📦")
+        await query.edit_message_text(
+            text=f"Current budget for {emoji} {cat.capitalize()}: {fmt_money(new_cap, currency)}\n\nUse the buttons below to adjust:",
+            reply_markup=get_adjustment_keyboard(cat)
+        )
 
 
 def start_http_server(app, main_loop, port, webhook_path, blocking=False):
@@ -388,6 +574,7 @@ def main():
     app.add_handler(CommandHandler("setbudget", setbudget_cmd))
     app.add_handler(CommandHandler("clear", clear_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CallbackQueryHandler(budget_callback))
 
     webhook_url = os.environ.get("RENDER_EXTERNAL_URL")
     
